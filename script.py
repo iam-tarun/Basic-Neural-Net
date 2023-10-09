@@ -1,6 +1,6 @@
-f = open("./yeast/yeast.data", "r")
+f = open("./dataset/data_banknote_authentication.txt", "r")
 lines = f.readlines()
-newFile = ["mcg,gvh,alm,mit,erl,pox,vac,nuc,localization_site\n"]
+newFile = ["v_wti,s_wti,c_wti,e_i,class\n"]
 classMap = {
   "CYT\n": "0\n",
   "NUC\n": "1\n",
@@ -14,10 +14,10 @@ classMap = {
   "ERL\n": "9\n"
 }
 for line in lines:
-  data = line.split("  ")
-  data[-1] = classMap[data[-1]]
-  newFile.append(" ,".join(data[1::]))
+  data = line.split(",")
+  # data[-1] = classMap[data[-1]]
+  newFile.append(" ,".join(data))
 f.close()
-f1 = open("./yeast/yeast.csv", "w")
+f1 = open("./dataset/bank_note.csv", "w")
 f1.writelines(newFile)
 f1.close()
