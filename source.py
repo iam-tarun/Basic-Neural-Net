@@ -3,6 +3,9 @@ import numpy as np
 from enum import Enum
 import matplotlib.pyplot as plt
 import csv
+import seaborn as sns
+from scipy.stats import norm
+
 
 class Activation(Enum):
   SIGMOID = 'sigmoid'
@@ -10,7 +13,7 @@ class Activation(Enum):
   RELU = 'relu'
 
 class NeuralNet:
-  def __init__(self, dataset: str, hidden_layers: int, neuronsPerLayer: int, activation: Activation='sigmoid'):
+  def __init__(self, dataset: str, hidden_layers: int, neuronsPerLayer: int, input_neurons: int, output_neurons: int, actual_value:str, activation: Activation='sigmoid'):
     self.dataset = dataset
     self.data = None
     self.hidden_layers = hidden_layers
@@ -21,24 +24,43 @@ class NeuralNet:
     self.train_Y = None
     self.test_X = None
     self.test_Y = None
-    self.train_Y_act = None
     self.input_weights = None
     self.hidden_weights = None
     self.hidden_input_weights = None
     self.output_weights = None
     self.output_weights = None
-    self.actual_value = 'class'
-    self.input_neurons = 4
-    self.output_neurons = 1
+    self.actual_value = actual_value
+    self.input_neurons = input_neurons
+    self.output_neurons = output_neurons
     self.displayPlots = False
     self.scaled_data = None
     self.feature_stats = {}
     self.activation: Activation = activation
     self.log = []
 
+
   def loadDataset(self):
-    # data = arff.loadarff(self.dataset)
     self.data = pd.read_csv(self.dataset)
+    if self.displayPlots:
+      # scatter plots between individual features and actual values
+      fig, axes = plt.subplots(2, 2, figsize=(8, 8))
+      for i in range(2):
+        for j in range(2):
+          index = i * 3 + j
+          axes[i, j].scatter(self.data.iloc[:,index], self.data.loc[:, self.actual_value], label=f'Subplot {index}')
+          axes[i, j].set_title(f'Subplot {self.data.columns[index]}')
+          axes[i, j].legend()
+
+      plt.tight_layout()
+      plt.show()
+  
+      for col in self.data.columns:
+        plt.figure(figsize=(8,8))
+        ax=sns.distplot(self.data[col], fit=norm)
+        ax.axvline(self.data[col].mean(), color='magenta', linestyle='dashed', linewidth=2)
+        ax.axvline(self.data[col].median(), color='teal', linestyle='dashed', linewidth=2)
+        ax.set_title(f'skewness of {col} : {self.data[col].skew()}')
+        plt.show()
     self.preprocess_data(0.8)
   
   """
@@ -153,9 +175,12 @@ class NeuralNet:
   method to write the log data in a csv file
   """
   def logData(self):
-    fields = ['epoch', 'trainingLoss', 'testLoss', 'epochs', 'lr', 'training_r2', 'testing_r2', 'training_rmse', 'testing_rmse']
+    fields = ['epoch', 'trainingLoss', 'testLoss', 'epochs', 'lr', 'training_r2', 'testing_r2', 'training_rmse', 'testing_rmse', 'training_accuracy', 'testing_accuracy']
     # fields = fields + ['W'+str(i) for i in range(self.features_len)]
     logFile = open('logfile.csv', 'a')
+    fields = fields + ['W layer 0 neuron ' + str(i) + ' index ' + str(j) for i in range(self.hidden_input_weights.shape[0]) for j in range(self.hidden_input_weights.shape[1])]
+    fields = fields + ['W layer ' + str(i + 1) + ' neuron ' + str(j) + ' index ' + str(k) for i in range(self.hidden_weights.shape[0]) for j in range(self.hidden_weights.shape[2]) for k in range(self.hidden_weights.shape[1]) ]
+    fields = fields + ['W output layer neuron '+ str(i) + ' index ' + str(j) for i in range(self.output_weights.shape[1]) for j in range(self.output_weights.shape[0])]
     # logFile.truncate(0)
     writer = csv.DictWriter(logFile, fieldnames=fields)
     writer.writeheader()
@@ -179,9 +204,9 @@ class NeuralNet:
   method to split the testing data frame into features and actual truth
   """
   def test_split(self):
-    self.test_x = self.test.drop(columns=[self.actual_value], axis=1)
-    self.test_x.insert(0, 'constant', 1)
-    self.test_Y = np.array(self.test[self.actual_value]).reshape(self.test_x.shape[0], 1)
+    self.test_X = self.test.drop(columns=[self.actual_value], axis=1)
+    self.test_X.insert(0, 'constant', 1)
+    self.test_Y = np.array(self.test[self.actual_value]).reshape(self.test_X.shape[0], 1)
 
   def initializeWeights(self):
     if self.hidden_layers:
@@ -196,7 +221,9 @@ class NeuralNet:
         # print("hidden weights shape is ", self.hidden_weights.shape)
       # print("output weights shape is ", self.output_weights.shape)
 
-  
+  def convToBinary(self, x):
+    return 1 if x > 0.5 else 0
+
   def sigmoid(self, net):
     return 1/(1 + np.exp(-net))
 
@@ -238,14 +265,23 @@ class NeuralNet:
   """
   def MSE(self, actual, pred):
     return np.sum((actual-pred)**2)/(2*len(pred))
-    
+  
+  def feed_forward(self, input, hiddenNets, length):
+    hiddenNets[0] = np.concatenate((self.activate(self.hidden_input_weights.dot(input)), np.ones((1, length))))
+    # all the hidden layers
+    for layer in range(1, self.hidden_layers):
+      hiddenNets[layer] = np.concatenate((self.activate(self.hidden_weights[layer-1].T.dot(hiddenNets[layer-1])), np.ones((1, length))))
+    # output layer   
+    return self.activate(self.output_weights.T.dot(hiddenNets[-1]))
+
   def train_data(self, epochs: int, lr: float):
-    inputLayerNets = self.train_X.T
+    inputLayerNets = np.array(self.train_X.T)
     hiddenNets = np.zeros((self.hidden_layers, self.neuronsLen+1, self.train_X.shape[0]))
     # print("input layer nets shape is ", inputLayerNets.shape)
     # print("hidden Nets shape is ", hiddenNets.shape)
     pred = None
-    for _ in range(epochs):
+    binConv = np.vectorize(self.convToBinary)
+    for epoch in range(epochs):
       # forward pass
       # hidden input weights
       hiddenNets[0] = np.concatenate((self.activate(self.hidden_input_weights.dot(inputLayerNets)), np.ones((1, self.train_X.shape[0]))))
@@ -254,6 +290,7 @@ class NeuralNet:
         hiddenNets[layer] = np.concatenate((self.activate(self.hidden_weights[layer-1].T.dot(hiddenNets[layer-1])), np.ones((1, self.train_X.shape[0]))))
       # output layer   
       pred = self.activate(self.output_weights.T.dot(hiddenNets[-1]))
+      # pred = self.feed_forward(inputLayerNets, hiddenNets)
 
       # backward pass
       # output layer
@@ -278,35 +315,57 @@ class NeuralNet:
       # self.input_weights += lr*(delta.dot(self.train_X))
       # print("epoch ", epoch)
       trainingLoss = self.MSE(self.train_Y, pred)
-      testLoss = self.MSE(self.test_Y)
+      test_pred = self.feed_forward(np.array(self.test_X.T), np.zeros((self.hidden_layers, self.neuronsLen+1, self.test_X.shape[0])), self.test_X.shape[0])
+      testLoss = self.MSE(self.test_Y.T, test_pred)
       training_r2 = self.R_squared_stat(self.train_Y, pred)
-      testing_r2 = self.R_squared_stat(self.test_Y, self.test_x.dot(self.weights))
+      testing_r2 = self.R_squared_stat(self.test_Y.T, test_pred)
       training_rmse = self.RMSE(trainingLoss)
       testing_rmse = self.RMSE(testLoss)
+      training_accuracy = self.accuracy(self.train_Y, binConv(pred))
+      testing_accuracy = self.accuracy(self.test_Y.T, binConv(test_pred))
       logData = {
           'epoch': epoch,
-          'trainingLoss': trainingLoss.iloc[0],
-          'testLoss': testLoss.iloc[0],
+          'trainingLoss': trainingLoss,
+          'testLoss': testLoss,
           'lr': lr,
           'epochs': epochs,
-          'training_r2': training_r2.iloc[0],
-          'testing_r2': testing_r2.iloc[0],
-          'training_rmse': training_rmse.iloc[0],
-          'testing_rmse': testing_rmse.iloc[0]
+          'training_r2': training_r2,
+          'testing_r2': testing_r2,
+          'training_rmse': training_rmse,
+          'testing_rmse': testing_rmse,
+          'training_accuracy': training_accuracy,
+          'testing_accuracy': testing_accuracy
         }
+      for i in range(self.hidden_input_weights.shape[0]):
+        for j in range(self.hidden_input_weights.shape[1]):
+          logData['W layer 0 neuron ' + str(i) + ' index ' + str(j)] = self.hidden_input_weights[i][j]
+      for i in range(self.hidden_weights.shape[0]):
+        for j in range(self.hidden_weights.shape[2]):
+          for k in range(self.hidden_weights.shape[1]):
+            logData['W layer ' + str(i + 1) + ' neuron ' + str(j) + ' index ' + str(k)] = self.hidden_weights[i][k][j]
+      for i in range(self.output_weights.shape[1]):
+        for j in range(self.output_weights.shape[0]):
+          logData['W output layer neuron '+ str(i) + ' index ' + str(j)] = self.output_weights[j][i]
+          
       self.log.append(logData)
-    loss = self.MSE(self.train_Y, pred)
-    print("loss is ", loss)
-    print(self.train_Y.T[:4], pred.T[:4])
-    print(self.R_squared_stat(self.train_Y, pred))
+    
 
-  def fit(self, split, epochs: int, lr: float, logging: bool = False, displayPlots: bool = False, plotFile: str = './part1-logfile.csv'):
+  def accuracy(self, actual, pred):
+    correct_predictions = 0
+    for i in range(actual.shape[1]):
+      if actual[0][i] == pred[0][i]:
+        correct_predictions += 1
+    return (correct_predictions / actual.shape[1]) * 100
+
+  def fit(self, split, epochs: int, lr: float, logging: bool = False, displayPlots: bool = False, plotFile: str = './logfile.csv'):
+    self.displayPlots = displayPlots
     self.loadDataset()
     self.splitData(split)
     self.splitTrainData()
     self.test_split()
     self.initializeWeights()
     self.train_data(epochs, lr)
+    print(self.log[-1])
     if logging:
       self.logData()
     if displayPlots and logging:
@@ -341,11 +400,53 @@ class NeuralNet:
     plt.plot(logDf['epoch'], logDf['testing_rmse'])
     plt.title('Testing RMSE vs epoch')
     plt.show()
+    # 'training accuracy'
+    plt.plot(logDf['epoch'], logDf['training_accuracy'])
+    plt.title('Training Accuracy vs epoch')
+    plt.show()
+    # 'training accuracy'
+    plt.plot(logDf['epoch'], logDf['testing_accuracy'])
+    plt.title('Testing Accuracy vs epoch')
+    plt.show()
     # Plots for weights
-    for i in range(self.features_len):
-      plt.plot(logDf['epoch'], logDf['W'+str(i)])
-      plt.title(f'W{i} vs epoch')
-      plt.show()   
+    # for i in range(self.features_len):
+    #   plt.plot(logDf['epoch'], logDf['W'+str(i)])
+    #   plt.title(f'W{i} vs epoch')
+    #   plt.show() 
+    for i in range(self.hidden_input_weights.shape[0]):
+      for j in range(self.hidden_input_weights.shape[1]):
+        plt.plot(logDf['epoch'], logDf['W layer 0 neuron ' + str(i) + ' index ' + str(j)])  
+        plt.title('W layer 0 neuron ' + str(i) + ' index ' + str(j) + ' vs epoch')
+        plt.show()
+    for i in range(self.hidden_weights.shape[0]):
+      for j in range(self.hidden_weights.shape[2]):
+        for k in range(self.hidden_weights.shape[1]):
+          plt.plot(logDf['epoch'], logDf['W layer ' + str(i + 1) + ' neuron ' + str(j) + ' index ' + str(k)])
+          plt.title('W layer ' + str(i + 1) + ' neuron ' + str(j) + ' index ' + str(k) + ' vs epoch')
+          plt.show()
+    for i in range(self.output_weights.shape[1]):
+      for j in range(self.output_weights.shape[0]):
+        plt.plot(logDf['epoch'], logDf['W output layer neuron '+ str(i) + ' index ' + str(j)])
+        plt.title('W output layer neuron '+ str(i) + ' index ' + str(j) + ' vs epoch')
+        plt.show()
 
-model = NeuralNet('./dataset/bank_note.csv', 2,3, Activation.RELU.value)
-model.fit(0.8, 1, 0.1)
+config = {
+  'dataset': 'https://drive.google.com/uc?id=1pV2AeRyY7pDPk3Y1TjtqvEWMDzAfS91V',
+  'train-fraction': 0.8, 
+  'epochs': 800,
+  'lr': 0.04,
+  'logging': False,
+  'correlation-threshold': 0.80,
+  'actual-value': 'class',
+  'convergence-threshold': 0.0005,
+  'display-plots': False,
+  'plotFilePath': './logfile.csv',
+  'hidden_layers': 2,
+  'neurons_per_hidden_layer': 3,
+  'activation': Activation.RELU.value,
+  'input_neurons': 4,
+  'output_neurons': 1
+}
+
+model = NeuralNet(config['dataset'], config['hidden_layers'], config['neurons_per_hidden_layer'], config['input_neurons'], config['output_neurons'], config['actual-value'], config['activation'])
+model.fit(config['train-fraction'], config['epochs'], config['lr'], config['logging'], config['display-plots'], config['plotFilePath'])
